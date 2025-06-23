@@ -1,0 +1,68 @@
+---
+- name: Run sql query
+  hosts: all
+  gather_facts: true
+  vars:
+    oracle_home: /u01/app/oracle/product/19.0.0.0/dbhome_1
+    out_file: "out/main_db_report.csv"
+
+
+  tasks:
+
+    - block:
+
+        - name: List process
+          ansible.builtin.shell:
+            cmd: 'ps ax | grep -v grep | grep ora_pmon'
+          changed_when: False
+          failed_when: False
+          register: pmon_list
+
+        - name: Check error
+          ansible.builtin.fail:
+            msg: "No Oracle PMON processes found"
+          when: pmon_list.stdout == ""
+        
+        - name: Extract SID
+          ansible.builtin.set_fact:
+            sid_list: "{{ sid_list | default([]) + [ item | regex_search(' ora_pmon_(.+)$') | replace(' ora_pmon_','') ] }}"
+          with_items: "{{ pmon_list.stdout_lines }}"
+
+        # - name: Pour test
+        #   ansible.builtin.set_fact:
+        #     sid_list: "['SRD1']"
+
+        - name: Result file header
+          ansible.builtin.lineinfile:
+            path: "{{ out_file }}"
+            insertbefore: BOF
+            line: "SID;Hôte;Site;Version DB;OS;HW;Data;SGA;TDE;DG;archive_lag_target"
+            create: True
+          delegate_to: localhost
+          run_once: True
+
+        - name: Récupérer la version d'ODA
+          ansible.builtin.shell:
+            cmd: '/usr/sbin/dmidecode | grep ORACLE'
+          register: oda_version_out
+          changed_when: False
+          failed_when: "'ORACLE SERVER' not in oda_version_out.stdout" 
+
+        - name: Set ODA version
+          ansible.builtin.set_fact:
+            oda_version: "{{ (oda_version_out.stdout_lines[0] | split(' ') | list)[4] | trim | regex_replace('X5-2', 'X5') | regex_replace('E5-2L', 'X10') | regex_replace('X8-2L', 'X8') }}"
+          changed_when: False
+
+        - name: Boucle de requête
+          include_tasks: "tasks/sql_new.yml"
+          with_items: "{{ sid_list }}"
+          loop_control:
+            loop_var: oracle_sid
+          register: result_list
+
+        - name: Copie du fichier
+          ansible.builtin.copy:
+            src: "{{ out_file }}"
+            dest: "/home/admin/applications/db_list/data/"
+          delegate_to: localhost
+          run_once: True

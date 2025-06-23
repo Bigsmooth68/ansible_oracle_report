@@ -1,0 +1,155 @@
+---
+
+- name: Find oracle home of {{ oracle_sid }}
+  ansible.builtin.shell:
+    cmd: "grep ^{{ oracle_sid }}: /etc/oratab | cut -d: -f2"
+  register: find_oracle_home
+  changed_when: False
+
+- name: Set oracle_home variable
+  ansible.builtin.set_fact:
+    oracle_home: "{{ find_oracle_home.stdout }}"
+- debug:
+    msg: "Oracle home for {{ oracle_sid }} is {{ oracle_home }}"
+
+- block:
+
+    - name: Run sql query on (1) {{ inventory_hostname }} {{ oracle_sid }}
+      ansible.builtin.shell:
+        cmd: |
+          sqlplus -S / as sysdba <<EOF
+          set pagesize 0 feedback off verify off heading off
+          SELECT 'VERSION:' || REGEXP_SUBSTR(banner, '\d+(\.\d+){1,4}') AS version FROM v\$version WHERE banner LIKE 'Oracle%';
+          SELECT 'SGA:' || TO_CHAR(SUM(value), 'FM99999999999999990') FROM v\$sga;
+          SELECT 'WALLET:' || CASE WHEN STATUS = 'OPEN' THEN 'TRUE' ELSE 'FALSE' END AS WALLET_USED FROM V\$ENCRYPTION_WALLET;
+          SELECT 'INSTANCE_TYPE:' || CASE WHEN DB.DATABASE_ROLE = 'PRIMARY' AND NOT EXISTS (SELECT 1 FROM V\$ARCHIVE_DEST WHERE DESTINATION IS NOT NULL AND STATUS = 'VALID' AND TARGET = 'STANDBY') THEN 'STANDALONE' WHEN DB.DATABASE_ROLE = 'PRIMARY' THEN 'PRIMARY' WHEN DB.DATABASE_ROLE LIKE '%STANDBY%' THEN 'STANDBY' ELSE 'UNKNOWN' END AS INSTANCE_TYPE FROM V\$DATABASE DB;
+          SELECT 'ARCHIVE_LAG_TARGET:' || value FROM v\$parameter WHERE name = 'archive_lag_target';
+          EOF
+        chdir: "{{ oracle_home }}/bin"
+        executable: /bin/bash
+      environment:
+        ORACLE_HOME: "{{ oracle_home }}"
+        ORACLE_SID: "{{ oracle_sid }}"
+        ORACLE_BASE: /u01/app/oracle
+        PATH: "{{ oracle_home }}/bin"
+      register: sql_output
+      become_user: oracle
+      become: yes
+      changed_when: False
+      failed_when: "'ORA' in sql_output.stdout"
+      no_log: True
+
+    - name: Extraire les valeurs de (1) {{ inventory_hostname }} {{ oracle_sid }}
+      ansible.builtin.set_fact:
+        version_oracle: "{{ sql_output.stdout_lines | select('search', '^VERSION:') | list | first | regex_replace('^VERSION:', '') }}"
+        sga_mb: "{{ (sql_output.stdout_lines | select('search', '^SGA:') | list)[0] | regex_replace('^SGA:', '') | trim }}"
+        wallet: "{{ (sql_output.stdout_lines | select('search', '^WALLET:') | list)[0] | regex_replace('^WALLET:', '') | trim }}"
+        instance_type: "{{ (sql_output.stdout_lines | select('search', '^INSTANCE_TYPE:') | list)[0] | regex_replace('^INSTANCE_TYPE:', '') | trim }}"
+        archive_lag_target: "{{ (sql_output.stdout_lines | select('search', '^ARCHIVE_LAG_TARGET:') | list)[0] | regex_replace('^ARCHIVE_LAG_TARGET:', '') | trim }}"
+        run_next_query: True
+        no_log: True
+
+  rescue:
+
+    - debug:
+        msg: "{{ sql_output }}"
+
+    - name: Set defaults
+      ansible.builtin.set_fact:
+        wallet: "Unk"
+        sga_mb: 0
+        instance_type: "Unk"
+        archive_lag_target: "Unk"
+        run_next_query: True
+
+
+- block:
+    
+    - name: Requête pour version plus précise {{ inventory_hostname }} {{ oracle_sid }}
+      ansible.builtin.shell:
+        cmd: |
+          sqlplus -S / as sysdba <<EOF
+          set pagesize 0 feedback off verify off heading off
+          SELECT 'VERSION:' || REGEXP_SUBSTR(banner_full, '\d+\.\d+\.\d+\.\d+\.\d+', 1, 2) FROM v\$version WHERE banner LIKE 'Oracle%';
+          EOF
+        chdir: "{{ oracle_home }}/bin"
+        executable: /bin/bash
+      environment:
+        ORACLE_HOME: "{{ oracle_home }}"
+        ORACLE_SID: "{{ oracle_sid }}"
+        ORACLE_BASE: /u01/app/oracle
+        PATH: "{{ oracle_home }}/bin"
+      register: sql_output
+      become_user: oracle
+      become: yes
+      changed_when: False
+      failed_when: "'ORA' in sql_output.stdout"
+      no_log: True
+
+    # - debug:
+    #     msg: "{{ sql_output }}"
+
+    - name: Extraire les valeurs de (2) {{ inventory_hostname }} {{ oracle_sid }}
+      ansible.builtin.set_fact:
+        version_oracle: "{{ sql_output.stdout_lines | select('search', '^VERSION:') | list | first | regex_replace('^VERSION:', '') }}"
+        no_log: True
+
+  rescue:
+    - name: rien à faire, les valeurs sont déjà définies
+      ansible.builtin.debug:
+        msg: "Pas de version plus précise à extraire, on utilise la version précédente"
+
+  when: run_next_query
+
+# Pour la taille sur disque
+- block: 
+    - name: Run sql query on {{ inventory_hostname }} {{ oracle_sid }}
+      ansible.builtin.shell:
+        cmd: |
+          sqlplus -S / as sysdba <<EOF
+          set pagesize 0 feedback off verify off heading off
+          SELECT 'SIZE:' || TO_CHAR(SUM(bytes), 'FM99999999999999990') FROM dba_data_files;
+          EOF
+        chdir: "{{ oracle_home }}/bin"
+        executable: /bin/bash
+      environment:
+        ORACLE_HOME: "{{ oracle_home }}"
+        ORACLE_SID: "{{ oracle_sid }}"
+        ORACLE_BASE: /u01/app/oracle
+        PATH: "{{ oracle_home }}/bin"
+      register: sql_output
+      become_user: oracle
+      become: yes
+      changed_when: False
+      failed_when: "'ORA' in sql_output.stdout"
+      no_log: True
+
+
+    - name: Extraire les valeurs de (3) {{ inventory_hostname }} {{ oracle_sid }}
+      ansible.builtin.set_fact:
+        taille_mb: >-
+          {{
+            (
+              sql_output.stdout_lines | select('search', '^SIZE:') | list
+            )[0] | regex_replace('^SIZE:', '') | trim
+            if (sql_output.stdout_lines | select('search', '^SIZE:') | list) | length > 0
+            else '0'
+          }}
+      no_log: True
+
+  rescue:
+    - name: debug
+      ansible.builtin.debug:
+        msg: "{{ sql_output }}"
+
+  when: run_next_query
+
+
+- name: Write result details
+  ansible.builtin.lineinfile:
+    path: "{{ out_file }}"
+    regexp: "{{ oracle_sid }};{{ inventory_hostname }};"
+    # "SID;Hôte;Site;Version DB;OS;HW; Taille(GB);SGA(GB)"
+    line: "{{ oracle_sid }};{{ inventory_hostname }};{{ inventory_hostname[6] | upper }};{{ version_oracle }};{{ ansible_distribution_file_variety }} {{ ansible_distribution_version }};{{ oda_version }};{{ taille_mb | default(0) }};{{ sga_mb }};{{ wallet }};{{ instance_type }};{{ archive_lag_target }}"
+    create: True
+  delegate_to: localhost
