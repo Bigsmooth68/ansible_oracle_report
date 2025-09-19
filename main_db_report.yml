@@ -1,68 +1,112 @@
 ---
-- name: Run sql query
+- name: Create Database Report
   hosts: all
-  gather_facts: true
+  strategy: free
+  gather_facts: false
   vars:
     oracle_home: /u01/app/oracle/product/19.0.0.0/dbhome_1
-    out_file: "out/main_db_report.csv"
-
+    out_file: "out/oracle_db_report.csv"
 
   tasks:
 
     - block:
 
-        - name: List process
-          ansible.builtin.shell:
-            cmd: 'ps ax | grep -v grep | grep ora_pmon'
-          changed_when: False
-          failed_when: False
-          register: pmon_list
+        - block:
 
-        - name: Check error
-          ansible.builtin.fail:
-            msg: "No Oracle PMON processes found"
-          when: pmon_list.stdout == ""
-        
-        - name: Extract SID
-          ansible.builtin.set_fact:
-            sid_list: "{{ sid_list | default([]) + [ item | regex_search(' ora_pmon_(.+)$') | replace(' ora_pmon_','') ] }}"
-          with_items: "{{ pmon_list.stdout_lines }}"
+            - name: Gather facts
+              setup:
 
-        # - name: Pour test
-        #   ansible.builtin.set_fact:
-        #     sid_list: "['SRD1']"
+            - name: List process
+              ansible.builtin.shell:
+                cmd: 'ps ax | grep -v grep | grep ora_pmon'
+              changed_when: false
+              failed_when: false
+              register: pmon_list
 
-        - name: Result file header
-          ansible.builtin.lineinfile:
-            path: "{{ out_file }}"
-            insertbefore: BOF
-            line: "SID;Hôte;Site;Version DB;OS;HW;Data;SGA;TDE;DG;archive_lag_target"
-            create: True
-          delegate_to: localhost
-          run_once: True
+            - name: Check error
+              ansible.builtin.fail:
+                msg: "No Oracle PMON processes found"
+              when: pmon_list.stdout == ""
+            
+            - name: Extract SID
+              ansible.builtin.set_fact:
+                sid_list: "{{ sid_list | default([]) + [ item | regex_search(' ora_pmon_(.+)$') | replace(' ora_pmon_','') | trim ] }}"
+              with_items: "{{ pmon_list.stdout_lines }}"
 
-        - name: Récupérer la version d'ODA
-          ansible.builtin.shell:
-            cmd: '/usr/sbin/dmidecode | grep ORACLE'
-          register: oda_version_out
-          changed_when: False
-          failed_when: "'ORACLE SERVER' not in oda_version_out.stdout" 
+            - name: Result file header
+              ansible.builtin.lineinfile:
+                path: "{{ out_file }}"
+                insertbefore: BOF
+                line: "SID;Hôte;DBID;Site;Version DB;OS;HW;Data;SGA;TDE;DG;archive_lag_target;Valid Dest;Min Succeed Dest"
+                create: true
+              delegate_to: localhost
+              # run_once: true
 
-        - name: Set ODA version
-          ansible.builtin.set_fact:
-            oda_version: "{{ (oda_version_out.stdout_lines[0] | split(' ') | list)[4] | trim | regex_replace('X5-2', 'X5') | regex_replace('E5-2L', 'X10') | regex_replace('X8-2L', 'X8') }}"
-          changed_when: False
+            - block:
 
-        - name: Boucle de requête
-          include_tasks: "tasks/sql_new.yml"
-          with_items: "{{ sid_list }}"
-          loop_control:
-            loop_var: oracle_sid
-          register: result_list
+              - name: Récupérer la version d'ODA
+                ansible.builtin.shell:
+                  cmd: '/usr/sbin/dmidecode | grep ORACLE'
+                register: hw_type_out
+                changed_when: false
+                failed_when: "'ORACLE SERVER' not in hw_type_out.stdout"
 
-        - name: Copie du fichier
-          ansible.builtin.copy:
-            src: "{{ out_file }}"
-            dest: "/home/admin/applications/db_list/data/"
-          delegate_to: localhost
-          run_once: True
+              - name: Set ODA version
+                ansible.builtin.set_fact:
+                  hw_type: "{{ (hw_type_out.stdout_lines[0] | split(' ') | list)[4] | trim | regex_replace('X5-2', 'X5') | regex_replace('E5-2L', 'X10') | regex_replace('X8-2L', 'X8') }}"
+                  site: "{{ inventory_hostname[6] | upper }}"
+                changed_when: false
+
+              when: ansible_facts.os_family != "AIX"
+
+              rescue:
+                - name: Non-ODA
+                  ansible.builtin.set_fact:
+                    hw_type: "Non-ODA"
+                    site: "{{ 'CHR' if 'CHR' in inventory_hostname else 'N/A' }}"
+            
+            - block:
+            
+              - name: Set AIX
+                ansible.builtin.set_fact:
+                  become_oracle: "ora19000"
+                  ansible_become_flags: "-H -S -u ora19000"
+
+              - name: Site M (la valeur par défaut)
+                ansible.builtin.set_fact:
+                  site: M
+
+              - name: Site H
+                ansible.builtin.set_fact:
+                  site: H
+                when: inventory_hostname in ['canal1.chm.com', 'canal3.chm.com', 'virtual1.chm.com', 'virtual2.chm.com']
+
+              - name: Get HW type
+                ansible.builtin.raw: 'prtconf | grep PowerPC_POWER'
+                register: hw_info
+                changed_when: False
+
+              - name: Extract HW type
+                ansible.builtin.set_fact:
+                  hw_type: "P{{ hw_info.stdout_lines[0] | regex_search('PowerPC_POWER(\\d+)') | replace('PowerPC_POWER','') | trim }}"
+
+              when: ansible_facts.os_family == "AIX"
+
+            - name: Boucle de requête
+              include_tasks: "tasks/sql_new.yml"
+              with_items: "{{ sid_list }}"
+              loop_control:
+                loop_var: oracle_sid
+              register: result_list
+              ignore_errors: True
+
+          rescue:
+            - name: Call AIX playbook
+              include_tasks: "tasks/aix_db_report.yml"
+
+    # - name: Copie du fichier
+    #   ansible.builtin.copy:
+    #     src: "{{ out_file }}"
+    #     dest: "/home/admin/applications/db_list/data/"
+    #   delegate_to: localhost
+      # run_once: true
