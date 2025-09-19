@@ -1,0 +1,58 @@
+---
+
+- name: Site M (M est la valeur par défaut)
+  ansible.builtin.set_fact:
+    site: M
+
+- name: Get pmon processes
+  ansible.builtin.raw: 'ps ax | grep -v grep | grep ora_pmon'
+  register: pmon_list
+  changed_when: false
+  # delegate_to: localhost
+
+- name: Extract SID
+  ansible.builtin.set_fact:
+    sid_list: "{{ sid_list | default([]) + [ item | regex_search(' ora_pmon_(.+)$') | replace(' ora_pmon_','') | trim ] }}"
+  with_items: "{{ pmon_list.stdout_lines }}"
+
+- name: Get os level
+  ansible.builtin.raw: 'oslevel'
+  register: oslevel
+  changed_when: False
+
+- name: Extract oslevel
+  ansible.builtin.set_fact:
+    oslevel: "{{ oslevel.stdout_lines[0] }}"
+
+- name: Get HW type
+  ansible.builtin.raw: 'prtconf | grep PowerPC_POWER'
+  register: hwinfo
+  changed_when: False
+
+- name: Extract HW type
+  ansible.builtin.set_fact:
+    hwtype: "{{ hwinfo.stdout_lines[0] | regex_search('PowerPC_POWER(\\d+)') | replace('PowerPC_POWER','') | trim }}"
+
+- name: Site H (M est la valeur par défaut)
+  ansible.builtin.set_fact:
+    site: H
+  when: inventory_hostname in ['canal1.chm.com', 'canal3.chm.com', 'virtual1.chm.com', 'virtual2.chm.com']
+
+- name: Loop through SIDs
+  ansible.builtin.lineinfile:
+    path: "{{ out_file }}"
+    regexp: "{{ oracle_sid }};{{ inventory_hostname }};"
+    line: "{{ oracle_sid }};{{ inventory_hostname }};;{{ site }};;AIX {{ oslevel }};P{{ hwtype }};;;False;STANDALONE;;;"
+    create: true
+  delegate_to: localhost
+
+  with_items: "{{ sid_list }}"
+  loop_control:
+    loop_var: oracle_sid
+
+# - name: Copie du fichier
+#   ansible.builtin.copy:
+#     src: "{{ out_file }}"
+#     dest: "/home/admin/applications/db_list/data/"
+#   delegate_to: localhost
+#   run_once: true
