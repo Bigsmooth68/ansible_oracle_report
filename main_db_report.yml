@@ -37,7 +37,8 @@
               ansible.builtin.lineinfile:
                 path: "{{ out_file }}"
                 insertbefore: BOF
-                line: "SID;Hôte;DBID;Site;Version DB;OS;HW;Data;SGA;TDE;DG;archive_lag_target;Valid Dest;Min Succeed Dest"
+                line: "SID;Hôte;ServiceName;DBID;Site;Version DB;OS;HW;Data;SGA;TDE;DG;archive_lag_target;Valid Dest;Min Succeed Dest;ORACLE_HOME;Flashback;DB Flashback Retention Target;DB Recovery File Dest Size"
+                regexp: "^SID;Hôte;ServiceName"
                 create: true
               delegate_to: localhost
               # run_once: true

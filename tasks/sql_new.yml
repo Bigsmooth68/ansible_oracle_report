@@ -1,20 +1,11 @@
 ---
 
-- name: Find oracle home of {{ oracle_sid }}
-  ansible.builtin.shell:
-    cmd: "grep ^{{ oracle_sid }}: /etc/oratab | cut -d: -f2"
-  register: find_oracle_home
-  changed_when: False
-
-- name: Set oracle_home variable
-  ansible.builtin.set_fact:
-    oracle_home: "{{ find_oracle_home.stdout }}"
-- debug:
-    msg: "Oracle home for {{ oracle_sid }} is {{ oracle_home }}"
+- name: Appel de oracle_home.yml
+  ansible.builtin.include_tasks: oracle_home.yml
 
 - block:
 
-    - name: Run sql query on (1) {{ inventory_hostname }} {{ oracle_sid }}
+    - name: Run sql query on (1) {{ inventory_hostname }} oracle_home:{{ oracle_home }} sid:{{ oracle_sid }} become:{{ become_oracle }}
       ansible.builtin.shell:
         cmd: |
           sqlplus -S / as sysdba <<EOF
@@ -24,21 +15,28 @@
           SELECT 'WALLET:' || CASE WHEN STATUS = 'OPEN' THEN 'TRUE' ELSE 'FALSE' END AS WALLET_USED FROM V\$ENCRYPTION_WALLET;
           SELECT 'INSTANCE_TYPE:' || CASE WHEN DB.DATABASE_ROLE = 'PRIMARY' AND NOT EXISTS (SELECT 1 FROM V\$ARCHIVE_DEST WHERE DESTINATION IS NOT NULL AND STATUS = 'VALID' AND TARGET = 'STANDBY') THEN 'STANDALONE' WHEN DB.DATABASE_ROLE = 'PRIMARY' THEN 'PRIMARY' WHEN DB.DATABASE_ROLE LIKE '%STANDBY%' THEN 'STANDBY' ELSE 'UNKNOWN' END AS INSTANCE_TYPE FROM V\$DATABASE DB;
           SELECT 'ARCHIVE_LAG_TARGET:' || value FROM v\$parameter WHERE name = 'archive_lag_target';
+          SELECT 'VALID_DESTINATIONS:' || count(*) FROM V\$ARCHIVE_DEST WHERE STATUS='VALID';
+          SELECT 'MIN_SUCCEED_DEST:' || value from v\$parameter WHERE name = 'log_archive_min_succeed_dest';
+          SELECT 'DBID:' || DBID from v\$database;
+          SELECT 'SERVICE_NAMES:' || value from v\$parameter where name = 'service_names';
+          SELECT 'FLASHBACK:' || flashback_on from v\$database;
+          SELECT 'DB_FLASHBACK_RETENTION_TARGET:' || value from v\$parameter where name = 'db_flashback_retention_target';
+          SELECT 'DB_RECOVERY_FILE_DEST_SIZE:' || value from v\$parameter where name = 'db_recovery_file_dest_size';
           EOF
         chdir: "{{ oracle_home }}/bin"
-        executable: /bin/bash
+        # executable: /bin/bash
       environment:
         ORACLE_HOME: "{{ oracle_home }}"
         ORACLE_SID: "{{ oracle_sid }}"
-        ORACLE_BASE: /u01/app/oracle
-        PATH: "{{ oracle_home }}/bin"
+        # ORACLE_BASE: /u01/app/oracle
+        PATH: "{{ oracle_home }}/bin:{{ ansible_env.PATH }}"
       register: sql_output
-      become_user: oracle
-      become: yes
-      changed_when: False
-      failed_when: "'ORA' in sql_output.stdout"
-      no_log: True
-
+      become_user: "{{ become_oracle }}"
+      become: true
+      changed_when: false
+      failed_when: "('ORA' in sql_output.stdout) or ('Ettno' in sql_output.stdout)"
+      no_log: true
+    
     - name: Extraire les valeurs de (1) {{ inventory_hostname }} {{ oracle_sid }}
       ansible.builtin.set_fact:
         version_oracle: "{{ sql_output.stdout_lines | select('search', '^VERSION:') | list | first | regex_replace('^VERSION:', '') }}"
@@ -46,8 +44,19 @@
         wallet: "{{ (sql_output.stdout_lines | select('search', '^WALLET:') | list)[0] | regex_replace('^WALLET:', '') | trim }}"
         instance_type: "{{ (sql_output.stdout_lines | select('search', '^INSTANCE_TYPE:') | list)[0] | regex_replace('^INSTANCE_TYPE:', '') | trim }}"
         archive_lag_target: "{{ (sql_output.stdout_lines | select('search', '^ARCHIVE_LAG_TARGET:') | list)[0] | regex_replace('^ARCHIVE_LAG_TARGET:', '') | trim }}"
-        run_next_query: True
-        no_log: True
+        valid_destinations: "{{ (sql_output.stdout_lines | select('search', '^VALID_DESTINATIONS:') | list)[0] | regex_replace('^VALID_DESTINATIONS:', '') | trim }}"
+        min_success_dest: "{{ (sql_output.stdout_lines | select('search', '^MIN_SUCCEED_DEST:') | list)[0] | regex_replace('^MIN_SUCCEED_DEST:', '') | trim }}"
+        dbid: "{{ (sql_output.stdout_lines | select('search', '^DBID:') | list)[0] | regex_replace('^DBID:', '') | trim }}"
+        service_names_tmp: "{{ (sql_output.stdout_lines | select('search', '^SERVICE_NAMES:') | list)[0] | regex_replace('^SERVICE_NAMES:', '') | trim }}"
+        flashback: "{{ (sql_output.stdout_lines | select('search', '^FLASHBACK:') | list)[0] | regex_replace('^FLASHBACK:', '') | trim }}"
+        db_flashback_retention_target: "{{ (sql_output.stdout_lines | select('search', '^DB_FLASHBACK_RETENTION_TARGET:') | list)[0] | regex_replace('^DB_FLASHBACK_RETENTION_TARGET:', '') | trim }}"
+        db_recovery_file_dest_size: "{{ (sql_output.stdout_lines | select('search', '^DB_RECOVERY_FILE_DEST_SIZE:') | list)[0] | regex_replace('^DB_RECOVERY_FILE_DEST_SIZE:', '') | trim }}"
+        run_next_query: true
+        no_log: true
+
+    - name: Normaliser la valeur de service_names
+      ansible.builtin.set_fact:
+        service_names: "{{ (service_names_tmp.split(',')[1] if 'srvjee' in service_names_tmp.split(',')[0] else service_names_tmp.split(',')[0]) }}"
 
   rescue:
 
@@ -60,8 +69,7 @@
         sga_mb: 0
         instance_type: "Unk"
         archive_lag_target: "Unk"
-        run_next_query: True
-
+        run_next_query: true
 
 - block:
     
@@ -80,19 +88,16 @@
         ORACLE_BASE: /u01/app/oracle
         PATH: "{{ oracle_home }}/bin"
       register: sql_output
-      become_user: oracle
-      become: yes
-      changed_when: False
-      failed_when: "'ORA' in sql_output.stdout"
-      no_log: True
-
-    # - debug:
-    #     msg: "{{ sql_output }}"
+      become_user: "{{ become_oracle }}"
+      become: true
+      changed_when: false
+      failed_when: "('ORA' in sql_output.stdout) or ('Ettno' in sql_output.stdout)"
+      no_log: true
 
     - name: Extraire les valeurs de (2) {{ inventory_hostname }} {{ oracle_sid }}
       ansible.builtin.set_fact:
         version_oracle: "{{ sql_output.stdout_lines | select('search', '^VERSION:') | list | first | regex_replace('^VERSION:', '') }}"
-        no_log: True
+        no_log: true
 
   rescue:
     - name: rien à faire, les valeurs sont déjà définies
@@ -101,14 +106,34 @@
 
   when: run_next_query
 
-# Pour la taille sur disque
-- block: 
-    - name: Run sql query on {{ inventory_hostname }} {{ oracle_sid }}
+- name: Bloc pour la taille sur disque
+  block: 
+
+    - name: Run sql query (3) on {{ inventory_hostname }} {{ oracle_sid }}
       ansible.builtin.shell:
         cmd: |
           sqlplus -S / as sysdba <<EOF
           set pagesize 0 feedback off verify off heading off
-          SELECT 'SIZE:' || TO_CHAR(SUM(bytes), 'FM99999999999999990') FROM dba_data_files;
+          SELECT 'SIZE:' || ROUND(SUM(dbf."Allocated_b"-dfs.freesize),2)
+          FROM 
+            (
+              SELECT 
+                tablespace_name,
+                SUM(bytes) "Allocated_b", 
+                SUM(DECODE(maxbytes, 0, bytes, maxbytes)) "MaxSize_b", 
+                SUM(bytes)*100/(SUM(DECODE(maxbytes, 0, bytes, maxbytes))) "%_Allocated"
+              FROM DBA_DATA_FILES
+              GROUP BY tablespace_name
+            ) dbf
+            LEFT OUTER JOIN
+              (
+              select 
+                tablespace_name,	
+                sum(bytes) freesize 
+              from dba_free_space 
+              group by tablespace_name
+              ) dfs
+            ON (dbf.TABLESPACE_NAME=dfs.TABLESPACE_NAME);
           EOF
         chdir: "{{ oracle_home }}/bin"
         executable: /bin/bash
@@ -118,11 +143,11 @@
         ORACLE_BASE: /u01/app/oracle
         PATH: "{{ oracle_home }}/bin"
       register: sql_output
-      become_user: oracle
-      become: yes
-      changed_when: False
+      become_user: "{{ become_oracle }}"
+      become: true
+      changed_when: false
       failed_when: "'ORA' in sql_output.stdout"
-      no_log: True
+      no_log: true
 
 
     - name: Extraire les valeurs de (3) {{ inventory_hostname }} {{ oracle_sid }}
@@ -135,7 +160,7 @@
             if (sql_output.stdout_lines | select('search', '^SIZE:') | list) | length > 0
             else '0'
           }}
-      no_log: True
+      no_log: true
 
   rescue:
     - name: debug
@@ -145,11 +170,10 @@
   when: run_next_query
 
 
-- name: Write result details
+- name: "Write result details {{ oracle_sid }} sur {{ inventory_hostname }}"
   ansible.builtin.lineinfile:
     path: "{{ out_file }}"
     regexp: "{{ oracle_sid }};{{ inventory_hostname }};"
-    # "SID;Hôte;Site;Version DB;OS;HW; Taille(GB);SGA(GB)"
-    line: "{{ oracle_sid }};{{ inventory_hostname }};{{ inventory_hostname[6] | upper }};{{ version_oracle }};{{ ansible_distribution_file_variety }} {{ ansible_distribution_version }};{{ oda_version }};{{ taille_mb | default(0) }};{{ sga_mb }};{{ wallet }};{{ instance_type }};{{ archive_lag_target }}"
-    create: True
+    line: "{{ oracle_sid }};{{ inventory_hostname }};{{ service_names }};{{ dbid }};{{ site }};{{ version_oracle }};{{ ansible_distribution_file_variety | default('AIX') }} {{ ansible_distribution_version }};{{ hw_type }};{{ taille_mb | default(0) }};{{ sga_mb }};{{ wallet }};{{ instance_type }};{{ archive_lag_target }};{{ valid_destinations }};{{ min_success_dest }};{{ oracle_home }};{{ flashback }};{{ db_flashback_retention_target }};{{ db_recovery_file_dest_size }}"
+    create: true
   delegate_to: localhost
