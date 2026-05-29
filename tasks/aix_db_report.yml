@@ -42,7 +42,7 @@
   ansible.builtin.lineinfile:
     path: "{{ out_file }}"
     regexp: "{{ oracle_sid }};{{ inventory_hostname }};"
-    line: "{{ oracle_sid }};{{ inventory_hostname }};;{{ site }};;AIX {{ oslevel }};P{{ hwtype }};;;False;STANDALONE;;;"
+    line: "{{ oracle_sid }};{{ inventory_hostname }};;;{{ site }};;AIX {{ oslevel }};P{{ hwtype }};;;False;False;STANDALONE;;;;;;;;"
     create: true
   delegate_to: localhost
 

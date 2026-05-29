@@ -22,6 +22,8 @@
           SELECT 'FLASHBACK:' || flashback_on from v\$database;
           SELECT 'DB_FLASHBACK_RETENTION_TARGET:' || value from v\$parameter where name = 'db_flashback_retention_target';
           SELECT 'DB_RECOVERY_FILE_DEST_SIZE:' || value from v\$parameter where name = 'db_recovery_file_dest_size';
+          SELECT 'DIAG_INFO:' || value from v\$diag_info where name = 'Diag Trace';
+          SELECT 'RAC:' || parallel FROM v\$instance;
           EOF
         chdir: "{{ oracle_home }}/bin"
         # executable: /bin/bash
@@ -51,6 +53,8 @@
         flashback: "{{ (sql_output.stdout_lines | select('search', '^FLASHBACK:') | list)[0] | regex_replace('^FLASHBACK:', '') | trim }}"
         db_flashback_retention_target: "{{ (sql_output.stdout_lines | select('search', '^DB_FLASHBACK_RETENTION_TARGET:') | list)[0] | regex_replace('^DB_FLASHBACK_RETENTION_TARGET:', '') | trim }}"
         db_recovery_file_dest_size: "{{ (sql_output.stdout_lines | select('search', '^DB_RECOVERY_FILE_DEST_SIZE:') | list)[0] | regex_replace('^DB_RECOVERY_FILE_DEST_SIZE:', '') | trim }}"
+        diag_info: "{{ (sql_output.stdout_lines | select('search', '^DIAG_INFO:') | list)[0] | regex_replace('^DIAG_INFO:', '') | trim }}"
+        rac: "{{ (sql_output.stdout_lines | select('search', '^RAC:') | list)[0] | regex_replace('^RAC:', '') | trim }}"
         run_next_query: true
         no_log: true
 
@@ -163,9 +167,13 @@
       no_log: true
 
   rescue:
-    - name: debug
+    - name: debug sql on {{ inventory_hostname }} {{ oracle_sid }}
       ansible.builtin.debug:
         msg: "{{ sql_output }}"
+        
+    - name: Set taille_mb to 0 on {{ inventory_hostname }} {{ oracle_sid }}
+      ansible.builtin.set_fact:
+        taille_mb: 0
 
   when: run_next_query
 
@@ -174,6 +182,6 @@
   ansible.builtin.lineinfile:
     path: "{{ out_file }}"
     regexp: "{{ oracle_sid }};{{ inventory_hostname }};"
-    line: "{{ oracle_sid }};{{ inventory_hostname }};{{ service_names }};{{ dbid }};{{ site }};{{ version_oracle }};{{ ansible_distribution_file_variety | default('AIX') }} {{ ansible_distribution_version }};{{ hw_type }};{{ taille_mb | default(0) }};{{ sga_mb }};{{ wallet }};{{ instance_type }};{{ archive_lag_target }};{{ valid_destinations }};{{ min_success_dest }};{{ oracle_home }};{{ flashback }};{{ db_flashback_retention_target }};{{ db_recovery_file_dest_size }}"
+    line: "{{ oracle_sid }};{{ inventory_hostname }};{{ service_names }};{{ dbid }};{{ site }};{{ version_oracle }};{{ ansible_distribution_file_variety | default('AIX') }} {{ ansible_distribution_version }};{{ hw_type }};{{ taille_mb | default(0) }};{{ sga_mb }};{{ wallet }};{{ rac }};{{ instance_type }};{{ archive_lag_target }};{{ valid_destinations }};{{ min_success_dest }};{{ oracle_home }};{{ flashback }};{{ db_flashback_retention_target }};{{ db_recovery_file_dest_size }};{{ diag_info }}/alert_{{ oracle_sid }}.log"
     create: true
   delegate_to: localhost
