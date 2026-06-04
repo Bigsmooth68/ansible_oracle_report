@@ -1,0 +1,50 @@
+---
+
+- name: Appel de oracle_home.yml
+  ansible.builtin.include_tasks: oracle_home.yml
+
+
+- name: Run show all in rman
+  ansible.builtin.shell:
+    cmd: |
+      rman target / <<EOF
+      show all;
+      exit;
+      EOF
+    chdir: "{{ oracle_home }}/bin"
+    # executable: /bin/bash
+  environment:
+    ORACLE_HOME: "{{ oracle_home }}"
+    ORACLE_SID: "{{ oracle_sid }}"
+    PATH: "{{ oracle_home }}/bin:{{ ansible_env.PATH }}"
+  register: rman_output
+  become_user: "{{ become_oracle }}"
+  become: true
+  changed_when: false
+  failed_when: "('ORA' in rman_output.stdout) or ('Ettno' in rman_output.stdout)"
+  no_log: true
+
+# - name: "Write result details {{ oracle_sid }} sur {{ inventory_hostname }}"
+#   ansible.builtin.lineinfile:
+#     path: "{{ out_file }}"
+#     # regexp: "{{ oracle_sid }};{{ inventory_hostname }};"
+#     line: "{{ oracle_sid }};{{ inventory_hostname }};{{ item }}"
+#     create: true
+#   loop: "{{ rman_output.stdout_lines | select('search', 'CONFIGURE') | list }}"
+#   delegate_to: localhost
+
+- name: Set rman_output_lines
+  ansible.builtin.set_fact:
+    rman_output_lines: "{{ rman_output.stdout_lines | select('search', 'CONFIGURE') | list }}"
+  changed_when: false
+
+- name: "Write result details {{ oracle_sid }} sur {{ inventory_hostname }}"
+  ansible.builtin.blockinfile:
+    path: "{{ out_file }}"
+    block: |
+      {% for line in rman_output_lines %}
+      {{ oracle_sid }};{{ inventory_hostname }};{{ line }}
+      {% endfor %}
+    marker: "# ANSIBLE MANAGED BLOCK {{ oracle_sid }};{{ inventory_hostname }}"
+
+  delegate_to: localhost
