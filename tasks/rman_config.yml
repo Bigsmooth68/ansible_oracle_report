@@ -43,8 +43,8 @@
     path: "{{ out_file }}"
     block: |
       {% for line in rman_output_lines %}
-      {{ oracle_sid }};{{ inventory_hostname }};{{ line }}
+      {{ oracle_sid }};{{ inventory_hostname }};{{ line.split(';')[:-1] | join(';') }}
       {% endfor %}
-    marker: "# ANSIBLE MANAGED BLOCK {{ oracle_sid }};{{ inventory_hostname }}"
+    marker: "# ANSIBLE MANAGED BLOCK {{ inventory_hostname }} - {{ oracle_sid }} "
 
   delegate_to: localhost
