@@ -37,6 +37,13 @@
       delegate_to: localhost
       # run_once: true
 
+    - name: Remove lines for the current host/SID
+      ansible.builtin.lineinfile:
+        path: "{{ out_file }}"
+        regexp: ";{{ inventory_hostname }};"
+        state: absent
+      delegate_to: localhost
+
     - name: Boucle de requête
       include_tasks: "tasks/rman_config.yml"
       with_items: "{{ sid_list }}"
