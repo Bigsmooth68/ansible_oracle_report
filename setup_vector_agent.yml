@@ -1,0 +1,37 @@
+---
+- name: Installation et configuration de l'agent vector
+  hosts: all
+  strategy: free
+  gather_facts: false
+  vars:
+    fichier_source: "binaries/vector-0.59.0-x86_64-unknown-linux-gnu.tar.gz"
+    fichier_destination : "/opt/vector-0.59.0-x86_64-unknown-linux-gnu.tar.gz"
+    fichier_configuration: "/opt/vector/vector.yaml"
+
+  tasks:
+
+    - name: Création du répertoire vector
+      ansible.builtin.file:
+        path: "{{ fichier_configuration | dirname }}"
+        state: directory
+    
+    - name: Création de /var/lib/vector
+      ansible.builtin.file:
+        path: /var/lib/vector
+        state: directory
+
+    - name: Mise en place configuration vector
+      ansible.builtin.template:
+        src: templates/vector.yaml.j2
+        dest: "{{ fichier_configuration }}"
+
+    - name: Décompression des binaires
+      ansible.builtin.unarchive:
+        src: "{{ fichier_source }}"
+        dest: "{{ fichier_configuration | dirname }}"
+
+    - name: Création du lien symbolique
+      ansible.builtin.file:
+        src: "{{ fichier_configuration | dirname }}/vector-x86_64-unknown-linux-gnu/bin/vector"
+        dest: "{{ fichier_configuration | dirname }}/vector"
+        state: link

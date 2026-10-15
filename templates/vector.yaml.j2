@@ -1,0 +1,105 @@
+
+data_dir: /var/lib/vector
+
+sources:
+  oracle_listener:
+    type: file
+    include:
+      - /u01/app/grid/diag/tnslsnr/*/*/alert/log.xml
+    exclude:
+      - /u01/app/grid/diag/tnslsnr/*/asm*/alert/log.xml
+    multiline:
+      start_pattern: '^\s*<msg '
+      condition_pattern: '^\s*<msg '
+      mode: halt_before
+      timeout_ms: 1000
+
+transforms:
+  listener:
+    type: remap
+    inputs:
+      - oracle_listener
+    source: |
+      .host = get_hostname!()
+      raw = string!(.message)
+      .source_type = "oracle"
+
+      m, err = parse_regex(raw, r'(?s)<txt>\s*(?P<t>.*?)\s*</txt>')
+      txt = if err == null { string!(m.t) } else { raw }
+      .message = txt
+
+      # m, err = parse_regex(txt, r'^\s*(?P<day>\d{2})-(?P<mon>[A-Za-z]{3})-(?P<rest>\d{4} \d{2}:\d{2}:\d{2})')
+      # if err == null {
+      #   mon = downcase(string!(m.mon))
+      #   mon = upcase(slice!(mon, 0, 1)) + slice!(mon, 1)
+      #   d = string!(m.day) + "-" + mon + "-" + string!(m.rest)
+
+      #   ts, err2 = parse_timestamp(d, "%d-%b-%Y %H:%M:%S")
+      #   if err2 == null {
+      #     .timestamp = ts
+      #   }
+      # }
+
+      # Cas d'un connexion à la base de données
+      if contains(txt, "CONNECT") {
+
+        .service_event = "connect"
+
+        # Extraction de l'hôte
+        m, err = parse_regex(txt, r'\(HOST=(?P<v>[^)]*)\)')
+        if err == null {
+          .client_host = m.v
+        }
+
+        # Extraction du user
+        m, err = parse_regex(txt, r'\(USER=(?P<v>[^)]*)\)')
+        if err == null {
+          .client_user = to_string(m.v)
+          # mettre le user en majuscules
+          if starts_with(.client_user, "adm") || starts_with(.client_user, "ehad") {
+            .client_user = upcase(.client_user)
+            }
+        }
+
+        # Extraction de la commande
+        m, err = parse_regex(txt, r'\(COMMAND=(?P<v>[^)]*)\)')
+        if err == null {
+          .command = m.v
+        }
+
+        # Extraction de l'instance
+        m, err = parse_regex(txt, r'\(INSTANCE_NAME=(?P<v>[^)]*)\)')
+        if err == null {
+          .instance = m.v
+        }
+
+      } # fin if CONNECT
+
+      # Extraction des événements service_* et de l'instance associée
+      m, err = parse_regex(txt, r'\*\s*(?P<evt>service_(?:update|died|register\w*))\s*\*\s*(?P<inst>[^*]*)\*')
+      if err == null {
+        .service_event = string!(m.evt)
+        .instance = strip_whitespace(string!(m.inst))
+      }
+
+      # Extraction du nombre après status
+      m, err = parse_regex(txt, r'\* (?P<v>\d+)$')
+      if err == null {
+        .code, err = to_int(m.v)
+      }
+
+
+sinks:
+  victorialogs:
+    type: elasticsearch
+    inputs:
+      - listener
+    endpoints:
+      - http://vmtestosr:9428/insert/elasticsearch/
+    api_version: v8
+    compression: gzip
+    healthcheck:
+      enabled: false
+    query:
+      _msg_field: message
+      _stream_fields: host,source_type
