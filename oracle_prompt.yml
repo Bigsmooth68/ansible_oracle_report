@@ -1,0 +1,107 @@
+---
+- name: Mise en place du prompt Oracle
+  hosts: all
+  strategy: free
+  gather_facts: false
+  vars:
+    oracle_home: /home/oracle
+    bashrc_path: "{{ oracle_home }}/.bashrc"
+  vars_files:
+    - vars/aliases.yml
+
+  tasks:
+
+    - name: Add dynamic PS1 and SID list to .bashrc of oracle user
+      ansible.builtin.blockinfile:
+        path: "{{ bashrc_path }}"
+        marker: "# {mark} ANSIBLE ORACLE PS1/SID"
+        create: true
+        block: |
+          # Show Oracle SIDs at login if ORACLE_SID not set
+          case $- in
+            *i*)
+              if  [ -f /etc/oratab ]; then
+                # Store the list of SIDs in a variable and display them in columns
+                sids=$(awk -F: 'NF && $1 !~ /^#/ {print $1}' /etc/oratab | grep -v "^+ASM" | sort -f)
+                # Ajout de la complétion pour la commande liste_users
+                complete -W "$sids" liste_users
+              fi
+              if [ -z "$ORACLE_SID" ]; then
+                  echo ""
+                  echo "Oracle SIDs disponibles dans /etc/oratab:"
+                  echo "$sids" | xargs -r -n5 | column -t
+                  echo ""
+              fi
+
+            ;;
+          esac
+
+          # Dynamic PS1 with ORACLE_SID
+          PS1="[\u@\h \${ORACLE_SID:+[\${ORACLE_SID}] }\W]\$ "
+
+          # Fonction pour lister les utilisateurs Oracle pour un SID donné
+          liste_users() (
+              local sid="${1:?Usage: liste_users <SID>}"
+
+              # Vérifie que le SID existe dans /oratab
+              if ! awk -F: -v s="$sid" 'NF && $1 !~ /^#/ && $1 == s {f=1} END{exit !f}' /etc/oratab; then
+                  echo "SID inconnu : $sid" >&2
+                  return 1
+              fi
+
+              export ORACLE_SID="$sid"
+              export ORAENV_ASK=NO
+              . oraenv >/dev/null
+
+              sqlplus -s / as sysdba <<EOF
+          SET PAGESIZE 0 FEEDBACK OFF HEADING OFF TIMING OFF
+          SELECT USERNAME FROM DBA_USERS ORDER BY 1;
+          EOF
+          )
+          echo -e "\e[36mliste_users\e[0m pour afficher les utilisateurs Oracle (SID doit être défini, tab completion disponible)"
+
+          # Espace
+          echo ""
+
+    - name: Add aliases
+      ansible.builtin.lineinfile:
+        path: /root/.bashrc
+        line: "{{ alias_line }}"
+      loop: "{{ aliases }}"
+      loop_control:
+        loop_var: alias_line
+
+    - name: Add extra bashrc lines for root
+      ansible.builtin.lineinfile:
+        path: /root/.bashrc
+        line: "{{ bashrc }}"
+      loop: "{{ bashrc_lines }}"
+      loop_control:
+        loop_var: bashrc
+
+    - name: Detect Oracle homes from /etc/oratab
+      ansible.builtin.shell: "awk -F: 'NF && $1 !~ /^#/ {print $2}' /etc/oratab | sort -u"
+      register: oracle_homes
+      changed_when: false
+
+    - name: Add glogin.sql for oracle
+      ansible.builtin.copy:
+        dest: "{{ item }}/sqlplus/admin/glogin.sql"
+        content: |
+          -- login.sql for Oracle user
+          SET SERVEROUTPUT ON
+          SET LINESIZE 120
+          SET PAGESIZE 100
+          SET FEEDBACK ON
+          SET TIMING ON
+          -- Récupération du db_unique_name dans une variable de substitution
+          SET TERMOUT OFF
+          COLUMN db_unique_name NEW_VALUE db_unique_name NOPRINT
+          SELECT SYS_CONTEXT('USERENV','DB_UNIQUE_NAME') AS db_unique_name FROM dual;
+          SET TERMOUT ON
+
+          SET SQLPROMPT "_USER'@'_CONNECT_IDENTIFIER (Uniq: &db_unique_name) > "
+        owner: oracle
+        group: oinstall
+      loop: "{{ oracle_homes.stdout_lines }}"
+      ignore_errors: true
